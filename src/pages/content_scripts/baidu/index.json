@@ -1,0 +1,8 @@
+{
+  "matches": [
+    "*://baidu.com/*",
+    "*://www.baidu.com/*"
+  ],
+  "run_at": "document_start",
+  "title": "将百度搜索的搜索按钮改名为“谷歌一下”，这个title字段在编译后不会显示在manifest中，只是作为备注"
+}

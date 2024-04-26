@@ -1,0 +1,7 @@
+{
+  "matches": [
+    "https://*.github.com/*"
+  ],
+  "run_at": "document_start",
+  "title": "Add the entry point of the `umi-plugin-browser-extension` module at the bottom of GitHub. The `title` field will be automatically removed after compilation."
+}
