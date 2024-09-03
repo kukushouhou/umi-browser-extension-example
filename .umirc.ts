@@ -5,5 +5,7 @@ export default defineConfig({
     plugins: [
         'umi-plugin-browser-extension',
     ],
-    browserExtension: {}
+    browserExtension: {
+        targets: ['chrome', 'firefox']
+    }
 });
