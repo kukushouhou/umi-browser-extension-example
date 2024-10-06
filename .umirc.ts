@@ -10,6 +10,6 @@ export default defineConfig({
     },
     jsMinifier: 'esbuild',
     jsMinifierOptions: {
-        minify: false
+        minify: false,
     }
 });
