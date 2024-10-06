@@ -1,0 +1,299 @@
+name: Auto Builds
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  initialize:
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.get_version.outputs.VERSION }}
+      release_id: ${{ steps.create_or_update_release.outputs.release_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装1.7版本JQ模块
+        uses: dcarbone/install-jq-action@v2
+        with:
+          version: '1.7'
+          force: 'false'
+
+      - name: 从 manifest.json 文件中获取版本号
+        id: get_version
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: 创建或更新发行
+        id: create_or_update_release
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const version = 'v${{ steps.get_version.outputs.VERSION }}';
+            const commitMessage = context.payload.head_commit.message.split('\n')[0];
+            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
+            const shortSha = context.sha.substring(0, 7);
+            const releaseNotes = `${commitMessage} [${shortSha}](${commitUrl})`;
+            
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: version
+              });
+              const updatedBody = `${release.data.body}\n${releaseNotes}`;
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+                body: updatedBody
+              });
+              core.setOutput('release_id', release.data.id);
+            } catch (error) {
+              if (error.status === 404) {
+                const release = await github.rest.repos.createRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_name: version,
+                  name: `Release ${version}`,
+                  body: releaseNotes,
+                  draft: false,
+                  prerelease: false
+                });
+                core.setOutput('release_id', release.data.id);
+              } else {
+                throw error;
+              }
+            }
+
+  build:
+    runs-on: ${{ matrix.os }}
+    needs: initialize
+
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        node-version: [ 18.x, 20.x, 22.x ]
+
+    outputs:
+      release_id: ${{ steps.create_release.outputs.release_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run build --if-present
+
+      - run: npm install archiver
+
+      - name: 打包构建到压缩包
+        run: |
+          node -e '
+            const archiver = require("archiver");
+            const fs = require("fs");
+            const path = require("path");
+            const version = process.env.VERSION;
+            const outputDir = "dist/build";
+            fs.readdirSync(outputDir).forEach(browser => {
+            const output_name = `${version}-${browser}-${process.env.RUNNER_OS.toLowerCase()}-node${process.env.NODE_VERSION}.zip`;
+            console.log("Creating archive:", output_name);
+            const output = fs.createWriteStream(output_name);
+            const archive = archiver("zip", { zlib: { level: 9 } });
+            archive.pipe(output);
+            archive.directory(path.join(outputDir, browser), false);
+            archive.finalize();
+          });
+          '
+        env:
+          VERSION: ${{ needs.initialize.outputs.version }}
+          NODE_VERSION: ${{ matrix.node-version }}
+          RUNNER_OS: ${{ matrix.os }}
+
+      - name: 检查并删除发行中的历史旧构建
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const path = require('path');
+            const fs = require('fs');
+            const release_id = '${{ needs.initialize.outputs.release_id }}';
+            const assets = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release_id
+            });
+            const files = fs.readdirSync('./').filter(file => path.extname(file) === '.zip');
+            for (const file of files) {
+              const existingAsset = assets.data.find(asset => asset.name === file);
+              if (existingAsset) {
+                console.log('Deleting existing asset:', file);
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: existingAsset.id
+                });
+              }
+            }
+
+      - name: 上传构建到发布
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const path = require('path');
+            const fs = require('fs');
+            const release_id = '${{ needs.initialize.outputs.release_id }}';
+            const files = fs.readdirSync('./').filter(file => path.extname(file) === '.zip');
+            for (const file of files) {
+              console.log('uploadReleaseAsset', file);
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release_id,
+                name: file,
+                data: fs.readFileSync(`./${file}`)
+              });
+            }
+
+
+  compare:
+    runs-on: ubuntu-latest
+    needs:
+      - initialize
+      - build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - run: npm install dir-compare
+
+      - name: 获取当前发行全部构建
+        id: get_assets
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const release_id = '${{ needs.initialize.outputs.release_id }}';
+            const assets = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release_id
+            });
+            core.setOutput('assets', JSON.stringify(assets.data));
+
+      - name: 下载当前发行全部构建
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const assets = JSON.parse('${{ steps.get_assets.outputs.assets }}');
+            const downloadDir = './downloaded-assets';
+            if (!fs.existsSync(downloadDir)) {
+              fs.mkdirSync(downloadDir);
+            }
+
+            for (const asset of assets) {
+              const response = await github.rest.repos.getReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                asset_id: asset.id,
+                headers: {
+                  accept: 'application/octet-stream'
+                }
+              });
+
+              const filePath = path.join(downloadDir, asset.name);
+              fs.writeFileSync(filePath, Buffer.from(response.data));
+            }
+
+      - name: 依次比较构建产物
+        run: |
+          node -e '
+          const fs = require("fs");
+          const path = require("path");
+          const { execSync } = require("child_process");
+          const dircompare = require("dir-compare");
+          
+          const localFiles = fs.readdirSync("./downloaded-assets");
+          
+          // 解压缩文件
+          localFiles.forEach(file => {
+            const filePath = path.join("./downloaded-assets", file);
+            const extractDir = path.join("./extracted-assets", file.replace(".zip", ""));
+            if (!fs.existsSync(extractDir)) {
+              fs.mkdirSync(extractDir, { recursive: true });
+            }
+            execSync(`unzip -o ${filePath} -d ${extractDir}`);
+            console.log(`已解压文件: ${extractDir}`);
+          });
+          
+          // Group files by prefix
+          const groupedFiles = {};
+          localFiles.forEach(file => {
+            const prefix = file.split("-").slice(0, 2).join("-"); // 获取前缀 (版本-浏览器)
+            if (!groupedFiles[prefix]) {
+              groupedFiles[prefix] = [];
+            }
+            groupedFiles[prefix].push(file.replace(".zip", ""));
+          });
+          
+          // Compare files within each group using dir-compare
+          for (const prefix in groupedFiles) {
+            const folders = groupedFiles[prefix];
+            if (folders.length > 1) {
+              for (let i = 0; i < folders.length; i++) {
+                for (let j = i + 1; j < folders.length; j++) {
+                  const folder1 = folders[i];
+                  const folder2 = folders[j];
+                  const folderPath1 = path.join("./extracted-assets", folder1);
+                  const folderPath2 = path.join("./extracted-assets", folder2);
+          
+                  console.log(`[${folder1}] 开始对比 ${folder2} ...`);
+                  try {
+                    const res = dircompare.compareSync(folderPath1, folderPath2, { compareContent: true });
+          
+                    const distinctFiles = res.diffSet
+                      .filter(diff => diff.state === "distinct")
+                      .map(diff => ({
+                        relativePath1: path.relative(folderPath1, path.join(diff.path1, diff.name1)),
+                        relativePath2: path.relative(folderPath2, path.join(diff.path2, diff.name2))
+                      }));
+          
+                    if (distinctFiles.length > 0) {
+                      console.error(`[${folder1}] 与 ${folder2} 不一致! 总共有 ${distinctFiles.length} 个文件不一致`);
+                      distinctFiles.forEach(file => {
+                        console.error(`\t文件 ${file.relativePath1} 与 ${file.relativePath2} 不同`);
+                      });
+                    } else {
+                      console.log(`[${folder1}] 与 ${folder2} 相同.`);
+                    }
+                  } catch (error) {
+                    console.error(`[${folder1}] 与 ${folder2} 对比时出错: ${error.message}`);
+                  }
+                }
+              }
+            }
+          }
+          '
