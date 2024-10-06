@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "umi": "^4.3.24",
+    "esbuild": "^0.24.0",
     "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {
