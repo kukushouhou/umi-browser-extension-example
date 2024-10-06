@@ -277,16 +277,24 @@ jobs:
                     const res = dircompare.compareSync(folderPath1, folderPath2, { compareContent: true });
           
                     const distinctFiles = res.diffSet
-                      .filter(diff => diff.state === "distinct")
+                      .filter(diff => diff.state !== "equal")
                       .map(diff => ({
-                        relativePath1: path.relative(folderPath1, path.join(diff.path1, diff.name1)),
-                        relativePath2: path.relative(folderPath2, path.join(diff.path2, diff.name2))
+                        relativePath1: diff.path1?path.relative(folderPath1, path.join(diff.path1, diff.name1)):undefined,
+                        relativePath2: diff.path2?path.relative(folderPath2, path.join(diff.path2, diff.name2)):undefined
                       }));
           
                     if (distinctFiles.length > 0) {
                       console.error(`[${folder1}] 与 ${folder2} 不一致! 总共有 ${distinctFiles.length} 个文件不一致`);
                       distinctFiles.forEach(file => {
-                        console.error(`\t文件 ${file.relativePath1} 与 ${file.relativePath2} 不同`);
+                        if(file.relativePath1 === file.relativePath2){
+                          console.error(`\t文件 ${file.relativePath1} 不同`);
+                        }else if(file.relativePath1 === undefined){
+                          console.error(`\t文件 ${file.relativePath2} 不在 ${folder1} 中`);
+                        }else if(file.relativePath2 === undefined){
+                          console.error(`\t文件 ${file.relativePath1} 不在 ${folder2} 中`);
+                        }else{
+                          console.error(`\t文件 ${file.relativePath1} 与 ${file.relativePath2} 不一致`);                
+                        }
                       });
                     } else {
                       console.log(`[${folder1}] 与 ${folder2} 相同.`);
@@ -299,3 +307,4 @@ jobs:
             }
           }
           '
+
