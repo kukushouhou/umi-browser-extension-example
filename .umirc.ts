@@ -8,4 +8,8 @@ export default defineConfig({
     browserExtension: {
         targets: ['chrome', 'firefox']
     },
+    jsMinifier: 'esbuild',
+    jsMinifierOptions: {
+        minify: false
+    }
 });
