@@ -8,5 +8,4 @@ export default defineConfig({
     browserExtension: {
         targets: ['chrome', 'firefox']
     },
-    esbuildMinifyIIFE: true,
 });
